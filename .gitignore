@@ -1,0 +1,20 @@
+# Build output
+gstow
+/bin/
+
+# Go artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts (if generated outside tmp)
+*.test
+out/
+
+# OS artifacts
+.DS_Store
+
+# Note: We do NOT ignore gs.yaml, as checking that file
+# into git is the entire point of the system.
