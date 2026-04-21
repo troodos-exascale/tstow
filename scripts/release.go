@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,7 @@ type Release struct {
 }
 
 func main() {
+	// 1. Parse the Changelog
 	data, err := os.ReadFile("changelog.yaml")
 	if err != nil {
 		fmt.Printf("Fatal: Could not read changelog.yaml: %v\n", err)
@@ -30,40 +32,35 @@ func main() {
 	latest := changelog[0]
 	fmt.Printf("🚀 Preparing Release v%s\n", latest.Version)
 
-	// 1. Tag and Push
+	// 2. Tag and Push
 	run("git", "tag", "-a", "v"+latest.Version, "-m", "Release v"+latest.Version)
 	run("git", "push", "origin", "v"+latest.Version)
 
-	// 2. Create GitHub Release
+	// 3. Create GitHub Release and attach artifacts
 	args := []string{"release", "create", "v" + latest.Version, "--title", "v" + latest.Version, "--notes", latest.Notes}
 
-	// If packages exist in the out/ directory, attach them
+	// Harvest packages and checksums from the out/ directory
 	if matches, _ := filepath.Glob("out/*.*"); len(matches) > 0 {
 		args = append(args, matches...)
 	}
 
 	fmt.Printf("📦 Uploading to GitHub...\n")
 	run("gh", args...)
-	fmt.Printf("✅ Release v%s is live!\n", latest.Version)
-}
+	fmt.Printf("✅ GitHub Release v%s is live!\n", latest.Version)
 
-func run(cmdName string, args ...string) {
-	cmd := exec.Command(cmdName, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		// Ignore tag already exists errors, but fail on others
-		if !strings.Contains(err.Error(), "already exists") {
-			os.Exit(1)
-		}
+	// 4. Update Homebrew Tap
+	fmt.Printf("🍺 Updating Homebrew Tap...\n")
+
+	// Create a safe, temporary directory
+	tempDir, err := os.MkdirTemp("", "homebrew-tap-*")
+	if err != nil {
+		fmt.Printf("Fatal: Could not create temp dir: %v\n", err)
+		os.Exit(1)
 	}
-}
-fmt.Printf("🍺 Updating Homebrew Tap...\n")
-	
-	// 1. Clone the tap repository into a temporary directory
-	run("git", "clone", "git@github.com:troodos-exascale/homebrew-tap.git", "/tmp/homebrew-tap")
-	
-	// 2. Dynamically generate the Ruby formula with the new version
+	defer os.RemoveAll(tempDir) // Ensure it gets cleaned up
+
+	run("git", "clone", "git@github.com:troodos-exascale/homebrew-tap.git", tempDir)
+
 	formula := fmt.Sprintf(`class Tstow < Formula
   desc "Explicit, idempotent deployment functor for dotfiles"
   homepage "https://github.com/troodos-exascale/tstow"
@@ -85,13 +82,34 @@ fmt.Printf("🍺 Updating Homebrew Tap...\n")
   end
 end`, latest.Version)
 
-	// 3. Write it, commit it, and push it
-	os.WriteFile("/tmp/homebrew-tap/tstow.rb", []byte(formula), 0644)
-	
-	run("git", "-C", "/tmp/homebrew-tap", "add", "tstow.rb")
-	run("git", "-C", "/tmp/homebrew-tap", "commit", "-m", "tstow: bump to v"+latest.Version)
-	run("git", "-C", "/tmp/homebrew-tap", "push", "origin", "main")
-	
-	// 4. Cleanup
-	os.RemoveAll("/tmp/homebrew-tap")
+	formulaPath := filepath.Join(tempDir, "tstow.rb")
+	os.WriteFile(formulaPath, []byte(formula), 0644)
+
+	run("git", "-C", tempDir, "add", "tstow.rb")
+	run("git", "-C", tempDir, "commit", "-m", "tstow: bump to v"+latest.Version)
+	run("git", "-C", tempDir, "push", "origin", "main")
+
 	fmt.Printf("✅ Homebrew Tap updated to v%s!\n", latest.Version)
+}
+
+// run executes a command, streams output, and intelligently ignores safe errors
+func run(cmdName string, args ...string) {
+	cmd := exec.Command(cmdName, args...)
+
+	// Capture all stdout and stderr
+	out, err := cmd.CombinedOutput()
+	outputStr := string(out)
+
+	// Print the output so you still see exactly what is happening
+	if outputStr != "" {
+		fmt.Print(outputStr)
+	}
+
+	if err != nil {
+		// Now we are actually reading the raw Git/GH error message!
+		if strings.Contains(outputStr, "already exists") || strings.Contains(outputStr, "nothing to commit") {
+			return // Safely ignore these specific known states and keep going
+		}
+		os.Exit(1)
+	}
+}
