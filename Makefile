@@ -7,6 +7,9 @@ INSTALL_DIR ?= /usr/local/bin
 OS := $(shell go env GOOS)
 ARCH := $(shell go env GOARCH)
 
+# Dynamically parse the latest version from changelog.yaml
+VERSION := $(shell grep -m 1 'version:' changelog.yaml | cut -d '"' -f 2)
+
 # Dynamic output directory
 BUILD_DIR := build/$(ARCH)/$(OS)
 COMPILED_BIN := $(BUILD_DIR)/$(BINARY_NAME)
@@ -78,15 +81,15 @@ completions: build
 
 ifeq ($(OS),linux)
 package: build
-	@echo "📦 Building Linux packages via fpm..."
+	@echo "📦 Building Linux packages via fpm (v$(VERSION))..."
 	@mkdir -p out dist/usr/local/bin
 	@cp $(COMPILED_BIN) dist/usr/local/bin/$(BINARY_NAME)
-	@fpm -f -s dir -t deb -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).deb usr/local/bin/$(BINARY_NAME)
-	@fpm -f -s dir -t rpm -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).rpm usr/local/bin/$(BINARY_NAME)
-	@fpm -f -s dir -t apk -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).apk usr/local/bin/$(BINARY_NAME)
+	@fpm -f -s dir -t deb -n $(BINARY_NAME) -v $(VERSION) -C dist -p out/$(BINARY_NAME)_$(VERSION)_$(ARCH).deb usr/local/bin/$(BINARY_NAME)
+	@fpm -f -s dir -t rpm -n $(BINARY_NAME) -v $(VERSION) -C dist -p out/$(BINARY_NAME)_$(VERSION)_$(ARCH).rpm usr/local/bin/$(BINARY_NAME)
+	@fpm -f -s dir -t apk -n $(BINARY_NAME) -v $(VERSION) -C dist -p out/$(BINARY_NAME)_$(VERSION)_$(ARCH).apk usr/local/bin/$(BINARY_NAME)
 	@rm -rf dist
 	@echo "🔐 Generating cryptographic checksums..."
-	@cd out && sha256sum * > $(BINARY_NAME)_$(ARCH)_checksums.txt
+	@cd out && sha256sum * > $(BINARY_NAME)_$(VERSION)_$(ARCH)_checksums.txt
 else
 package: build
 	@echo "⚠️  Not on Linux (detected $(OS)). Skipping fpm package generation."

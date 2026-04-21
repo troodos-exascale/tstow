@@ -1,8 +1,6 @@
-- version: "1.3.0"
+- version: "1.3.1"
   notes: |
-    - Remember the repo in .stowrc makes using this easier
-    - Sign tags
-    - Fix quite a few small bugs in the release manager
+    - append version number to package names
 - version: "1.2.0"
   notes: |
     - Added OS/Arch detection to Makefile
