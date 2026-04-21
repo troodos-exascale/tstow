@@ -36,28 +36,48 @@ func main() {
 	run("git", "tag", "-a", "v"+latest.Version, "-m", "Release v"+latest.Version)
 	run("git", "push", "origin", "v"+latest.Version)
 
-	// 3. Create GitHub Release and attach artifacts
-	args := []string{"release", "create", "v" + latest.Version, "--title", "v" + latest.Version, "--notes", latest.Notes}
-
-	// Harvest packages and checksums from the out/ directory
+	// 3. Harvest artifacts
+	var uploadFiles []string
 	if matches, _ := filepath.Glob("out/*.*"); len(matches) > 0 {
-		args = append(args, matches...)
+		uploadFiles = matches
 	}
 
+	// 4. Create or Append to GitHub Release
 	fmt.Printf("📦 Uploading to GitHub...\n")
-	run("gh", args...)
-	fmt.Printf("✅ GitHub Release v%s is live!\n", latest.Version)
+	createArgs := append([]string{"release", "create", "v" + latest.Version, "--title", "v" + latest.Version, "--notes", latest.Notes}, uploadFiles...)
+	cmd := exec.Command("gh", createArgs...)
 
-	// 4. Update Homebrew Tap
+	out, ghErr := cmd.CombinedOutput()
+	outStr := string(out)
+
+	if ghErr != nil {
+		// If Mac already created it, gracefully fall back to uploading assets to the existing release
+		if strings.Contains(outStr, "already exists") || strings.Contains(outStr, "Validation Failed") {
+			fmt.Printf("⚠️ Release v%s already exists. Appending assets instead...\n", latest.Version)
+			if len(uploadFiles) > 0 {
+				uploadArgs := append([]string{"release", "upload", "v" + latest.Version, "--clobber"}, uploadFiles...)
+				run("gh", uploadArgs...)
+			}
+		} else if strings.Contains(ghErr.Error(), "executable file not found") {
+			fmt.Printf("\n❌ Fatal: 'gh' CLI is not installed on this machine.\nInstall it and run 'gh auth login'.\n")
+			os.Exit(1)
+		} else {
+			fmt.Printf("\n❌ Fatal GitHub Error:\n%s\n%v\n", outStr, ghErr)
+			os.Exit(1)
+		}
+	} else if outStr != "" {
+		fmt.Print(outStr)
+	}
+	fmt.Printf("✅ GitHub Release v%s is synced!\n", latest.Version)
+
+	// 5. Update Homebrew Tap
 	fmt.Printf("🍺 Updating Homebrew Tap...\n")
-
-	// Create a safe, temporary directory
 	tempDir, err := os.MkdirTemp("", "homebrew-tap-*")
 	if err != nil {
 		fmt.Printf("Fatal: Could not create temp dir: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tempDir) // Ensure it gets cleaned up
+	defer os.RemoveAll(tempDir)
 
 	run("git", "clone", "git@github.com:troodos-exascale/homebrew-tap.git", tempDir)
 
@@ -82,8 +102,7 @@ func main() {
   end
 end`, latest.Version)
 
-	formulaPath := filepath.Join(tempDir, "tstow.rb")
-	os.WriteFile(formulaPath, []byte(formula), 0644)
+	os.WriteFile(filepath.Join(tempDir, "tstow.rb"), []byte(formula), 0644)
 
 	run("git", "-C", tempDir, "add", "tstow.rb")
 	run("git", "-C", tempDir, "commit", "-m", "tstow: bump to v"+latest.Version)
@@ -95,21 +114,18 @@ end`, latest.Version)
 // run executes a command, streams output, and intelligently ignores safe errors
 func run(cmdName string, args ...string) {
 	cmd := exec.Command(cmdName, args...)
-
-	// Capture all stdout and stderr
 	out, err := cmd.CombinedOutput()
-	outputStr := string(out)
+	outStr := string(out)
 
-	// Print the output so you still see exactly what is happening
-	if outputStr != "" {
-		fmt.Print(outputStr)
+	if outStr != "" {
+		fmt.Print(outStr)
 	}
 
 	if err != nil {
-		// Now we are actually reading the raw Git/GH error message!
-		if strings.Contains(outputStr, "already exists") || strings.Contains(outputStr, "nothing to commit") {
+		if strings.Contains(outStr, "already exists") || strings.Contains(outStr, "nothing to commit") {
 			return // Safely ignore these specific known states and keep going
 		}
+		fmt.Printf("\n❌ Command failed: %s %v\nError details: %v\n", cmdName, args, err)
 		os.Exit(1)
 	}
 }
