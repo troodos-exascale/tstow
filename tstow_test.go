@@ -133,7 +133,7 @@ func TestTstowE2E(t *testing.T) {
 		os.MkdirAll(filepath.Join(repoDir, "emacs"), 0755)
 		os.WriteFile(filepath.Join(repoDir, "shell", ".bashrc"), []byte("data"), 0644)
 		os.WriteFile(filepath.Join(repoDir, "emacs", "init.el"), []byte("data"), 0644)
-		
+
 		yamlContent := "mappings:\n  shell/.bashrc: .bashrc\n  emacs/init.el: .emacs.d/init.el\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
@@ -190,11 +190,11 @@ func TestTstowE2E(t *testing.T) {
 
 		// Even WITH force, it must refuse
 		out, _ := runCmdE(binPath, append(baseArgs, "install", "-f")...)
-		
+
 		if !strings.Contains(out, "NEVER remove") {
 			t.Errorf("Failed to enforce safety boundary. Output: %s", out)
 		}
-		
+
 		info, _ := os.Lstat(filepath.Join(homeDir, ".bashrc"))
 		if info.Mode()&os.ModeSymlink != 0 {
 			t.Errorf("CRITICAL FAILURE: tstow overwrote a real file with a symlink!")

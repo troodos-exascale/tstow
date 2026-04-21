@@ -1,4 +1,4 @@
-module dotfiles/gstow
+module dotfiles/tstow
 
 go 1.25.0
 

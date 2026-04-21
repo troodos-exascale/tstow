@@ -18,3 +18,12 @@ out/
 
 # Note: We do NOT ignore gs.yaml, as checking that file
 # into git is the entire point of the system.
+# Packaging artifacts
+dist/
+*.deb
+*.rpm
+*.apk
+*.tar.gz
+out/
+dist/
+build/
