@@ -1,3 +1,6 @@
+- version: "1.3.2"
+  notes: |
+    - fix brew checksum
 - version: "1.3.1"
   notes: |
     - append version number to package names

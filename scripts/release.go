@@ -82,12 +82,17 @@ func main() {
 
 	run("git", "clone", "git@github.com:troodos-exascale/homebrew-tap.git", tempDir)
 
+	// Dynamically grab the exact SHA of the commit we just tagged
+	revCmd := exec.Command("git", "rev-parse", "HEAD")
+	revOut, _ := revCmd.Output()
+	gitRevision := strings.TrimSpace(string(revOut))
+
 	formula := fmt.Sprintf(`class Tstow < Formula
   desc "Explicit, idempotent deployment functor for dotfiles"
   homepage "https://github.com/troodos-exascale/tstow"
   url "https://github.com/troodos-exascale/tstow.git",
       tag:      "v%s",
-      revision: "HEAD"
+      revision: "%s"
   license "Apache-2.0"
   head "https://github.com/troodos-exascale/tstow.git", branch: "main"
 
@@ -101,7 +106,7 @@ func main() {
   test do
     system "#{bin}/tstow", "--help"
   end
-end`, latest.Version)
+end`, latest.Version, gitRevision)
 
 	os.WriteFile(filepath.Join(tempDir, "tstow.rb"), []byte(formula), 0644)
 
