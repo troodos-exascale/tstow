@@ -32,9 +32,10 @@ func main() {
 	latest := changelog[0]
 	fmt.Printf("🚀 Preparing Release v%s\n", latest.Version)
 
-	// 2. Tag and Push
-	run("git", "tag", "-a", "v"+latest.Version, "-m", "Release v"+latest.Version)
-	run("git", "push", "origin", "v"+latest.Version)
+	// 2. Tag and Push (Force to HEAD and Cryptographically Sign)
+	fmt.Printf("🔐 Tagging and signing release at HEAD...\n")
+	run("git", "tag", "-f", "-s", "v"+latest.Version, "-m", "Release v"+latest.Version)
+	run("git", "push", "--force", "origin", "v"+latest.Version)
 
 	// 3. Harvest artifacts
 	var uploadFiles []string

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +15,15 @@ import (
 )
 
 const mappingFile = "tstow.yaml"
+const rcFile = ".tstowrc"
 
 type Config struct {
 	Mappings map[string]string `yaml:"mappings"`
 	Skips    []string          `yaml:"skips,omitempty"`
+}
+
+type RcConfig struct {
+	RepoDir string `yaml:"repo_dir"`
 }
 
 var (
@@ -48,12 +55,20 @@ It maps configuration files from a repository to an installation folder.`,
 				installFolder = abs
 			}
 
-			// Resolve repository directory
+			// RC / Autopilot Logic for Repo Directory
+			if !cmd.Flags().Changed("repo-dir") {
+				if saved := loadRc(); saved != "" {
+					repoDir = saved
+				}
+			}
+
+			// Resolve absolute repo directory and memorize it
 			absRepo, err := filepath.Abs(repoDir)
 			if err != nil {
 				return err
 			}
 			repoDir = absRepo
+			saveRc(repoDir)
 
 			return nil
 		},
@@ -100,10 +115,19 @@ It maps configuration files from a repository to an installation folder.`,
 
 	var deleteCmd = &cobra.Command{
 		Use:   "delete <repo_path>",
-		Short: "Removes a location pair or skip rule",
+		Short: "Removes a location pair or skip rule (leaves repo file intact)",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			handleDelete(loadConfig(), args[0])
+		},
+	}
+
+	var undoCmd = &cobra.Command{
+		Use:   "undo <repo_path>",
+		Short: "Reverts an add: moves the physical file back to the install dir and deletes the mapping",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			handleUndo(loadConfig(), args[0])
 		},
 	}
 
@@ -116,7 +140,7 @@ It maps configuration files from a repository to an installation folder.`,
 		},
 	}
 
-	rootCmd.AddCommand(addCmd, installCmd, showCmd, skipCmd, deleteCmd, demoCmd)
+	rootCmd.AddCommand(addCmd, installCmd, showCmd, skipCmd, deleteCmd, undoCmd, demoCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -131,6 +155,7 @@ func handleAdd(cfg *Config, localPath, repoPath string) {
 	}
 
 	localExpanded := expandInstallPath(localPath)
+	portableDest := makePortablePath(localPath) // Protect YAML from absolute shell expansion
 	absRepoPath := filepath.Join(repoDir, repoPath)
 
 	info, err := os.Lstat(localExpanded)
@@ -148,18 +173,19 @@ func handleAdd(cfg *Config, localPath, repoPath string) {
 	if err := os.MkdirAll(filepath.Dir(absRepoPath), 0755); err != nil {
 		fatal("Failed to create repo directory: %v", err)
 	}
-	if err := os.Rename(localExpanded, absRepoPath); err != nil {
-		fatal("Failed to move path to repo: %v", err)
+
+	if err := movePath(localExpanded, absRepoPath); err != nil {
+		fatal("Failed to move path across filesystems: %v", err)
 	}
 
 	if cfg.Mappings == nil {
 		cfg.Mappings = make(map[string]string)
 	}
-	cfg.Mappings[repoPath] = localPath
+	cfg.Mappings[repoPath] = portableDest
 	saveConfig(cfg)
 
 	createSymlink(absRepoPath, localExpanded, false)
-	fmt.Printf("Added: %s -> %s\n", localPath, repoPath)
+	fmt.Printf("Added: %s -> %s\n", portableDest, repoPath)
 }
 
 func handleInstall(cfg *Config, force bool, args []string) {
@@ -191,6 +217,35 @@ func handleInstall(cfg *Config, force bool, args []string) {
 		createSymlink(absRepoPath, expandedDest, force)
 	}
 	fmt.Println("Install complete.")
+}
+
+func handleUndo(cfg *Config, repoPath string) {
+	destPath, exists := cfg.Mappings[repoPath]
+	if !exists {
+		fatal("Mapping not found for: %s", repoPath)
+	}
+
+	absRepo := filepath.Join(repoDir, repoPath)
+	expandedDest := expandInstallPath(destPath)
+
+	// Sever symlink if it belongs to us
+	info, err := os.Lstat(expandedDest)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		if target, _ := os.Readlink(expandedDest); target == absRepo {
+			os.Remove(expandedDest)
+		}
+	}
+
+	// Move the real file back from the repo
+	if err := movePath(absRepo, expandedDest); err != nil {
+		fatal("Failed to restore physical file to %s: %v", expandedDest, err)
+	}
+
+	// Clean up YAML
+	delete(cfg.Mappings, repoPath)
+	saveConfig(cfg)
+
+	fmt.Printf("✅ Undo complete: %s moved back to %s\n", repoPath, destPath)
 }
 
 func handleShow(cfg *Config) {
@@ -322,9 +377,14 @@ func createSymlink(absRepoPath, expandedDest string, force bool) {
 			}
 			os.Remove(expandedDest) // Safe to remove wrong symlinks
 		} else {
-			// RULE: NEVER remove regular file or dir
-			fmt.Printf("[FATAL CONFLICT] %s is a regular file/dir. tstow will NEVER remove it. Move it manually.\n", expandedDest)
-			return
+			// IDENTICAL FILE RESOLUTION (Feature #4)
+			if filesIdentical(absRepoPath, expandedDest) {
+				fmt.Printf("[FIX] %s is identical to repo file. Safely replacing with symlink.\n", expandedDest)
+				os.Remove(expandedDest) // Safe to delete since it's identical!
+			} else {
+				fmt.Printf("[FATAL CONFLICT] %s is a regular file/dir differing from repo. Move it manually.\n", expandedDest)
+				return
+			}
 		}
 	}
 
@@ -336,6 +396,96 @@ func createSymlink(absRepoPath, expandedDest string, force bool) {
 }
 
 // -- Utilities --
+
+// makePortablePath prevents the shell from hardcoding absolute paths into tstow.yaml
+func makePortablePath(provided string) string {
+	if strings.HasPrefix(provided, "~/") {
+		return provided
+	}
+	absProvided, err := filepath.Abs(provided)
+	if err == nil && strings.HasPrefix(absProvided, installFolder) {
+		rel, err := filepath.Rel(installFolder, absProvided)
+		if err == nil {
+			return "~/" + rel
+		}
+	}
+	return provided
+}
+
+// filesIdentical compares two files byte-by-byte
+func filesIdentical(file1, file2 string) bool {
+	f1, err := os.ReadFile(file1)
+	if err != nil {
+		return false
+	}
+	f2, err := os.ReadFile(file2)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(f1, f2)
+}
+
+func loadRc() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(h, rcFile))
+	if err == nil {
+		var rc RcConfig
+		if yaml.Unmarshal(data, &rc) == nil {
+			return rc.RepoDir
+		}
+	}
+	return ""
+}
+
+func saveRc(rDir string) {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	rc := RcConfig{RepoDir: rDir}
+	data, err := yaml.Marshal(rc)
+	if err == nil {
+		os.WriteFile(filepath.Join(h, rcFile), data, 0644)
+	}
+}
+
+func movePath(src, dst string) error {
+	// Try the fast, kernel-level rename first
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+
+	// If it fails (likely an EXDEV cross-device link error), fallback to copy+delete
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		sourceFile.Close()
+		return err
+	}
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		sourceFile.Close()
+		destFile.Close()
+		return err
+	}
+
+	if info, err := os.Stat(src); err == nil {
+		destFile.Chmod(info.Mode())
+	}
+
+	sourceFile.Close()
+	destFile.Close()
+
+	return os.Remove(src)
+}
 
 func loadConfig() *Config {
 	cfg := &Config{Mappings: make(map[string]string), Skips: []string{}}

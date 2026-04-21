@@ -40,14 +40,19 @@ Download the `.apk` from the Releases page and install it using:
 
 ```bash
 make install
+```
 
 ## Core Workflows
 
 Commands: 
-- default places: -i is `~` and -r `.`.   You can override these to provision arbitrary systems, containers, or test environments.
+- Autopilot Defaults: -i defaults to ~ and -r defaults to .. Upon your first run, tstow memorizes your repository location in ~/.tstowrc so you never have to type -r again! All mappings are saved using portable ~/ paths to guarantee cross-machine compatibility.  You can override these to provision arbitrary systems, containers, or test environments - but CAREFUL at present each such override re-writes its directory in `~/.tstowrc`
 - Adding a (config file) to the repository: Move a file/directory into the repository and instantly link it. Symlinks are rejected to prevent circular dependency loops.
 ```bash
 tstow add ~/.bashrc shell/.bashrc
+```
+- Reverting an addition: Made a mistake? The undo functor cleanly severs the symlink, moves the physical file back to your system, and erases the YAML mapping.
+```
+tstow undo shell/.bashrc
 ```
 - Recursive Installation
 Enforce the mapping state. You can install everything, or restrict it to a specific subfolder within your repo.
@@ -55,7 +60,7 @@ Enforce the mapping state. You can install everything, or restrict it to a speci
 tstow install        # Enforces entire tstow.yaml
 tstow install shell  # Recursively links any mapped file inside repo/shell/
 ```
-(If a local file is conflicting with a symlink, tstow safely halts. Use tstow install -f to forcibly correct broken symlinks).
+(Safety First: If a local file conflicts with a mapped file, tstow halts to protect your data. However, if the conflicting local file is byte-for-byte identical to the repo file, tstow performs a "Safe Replace," automatically swapping it for a symlink to eliminate setup friction on new machines. Use `tstow install -f` to forcibly correct wrong symlinks).
 - Divergence and Exclusions: The Skip List
 Sometimes a specific machine shouldn't link a file (e.g., macOS vs Linux). Add it to the skiplist so tstow install ignores it without deleting the configuration, or if you maintain stuff in your repo that you don't want installed (e.g. a package list), skip it. 
 ```bash
@@ -66,3 +71,7 @@ View exactly what is installed, what is skipped, and what is conflicting with lo
 ```bash
 tstow show
 ```
+
+## Acknowlegements
+
+GNU stow is a fantastic solution that survived more than 20 years of evolution. tstow is deeply inspired by it. 
