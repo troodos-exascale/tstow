@@ -81,9 +81,9 @@ package: build
 	@echo "📦 Building Linux packages via fpm..."
 	@mkdir -p out dist/usr/local/bin
 	@cp $(COMPILED_BIN) dist/usr/local/bin/$(BINARY_NAME)
-	@fpm -s dir -t deb -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).deb usr/local/bin/$(BINARY_NAME)
-	@fpm -s dir -t rpm -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).rpm usr/local/bin/$(BINARY_NAME)
-	@fpm -s dir -t apk -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).apk usr/local/bin/$(BINARY_NAME)
+	@fpm -f -s dir -t deb -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).deb usr/local/bin/$(BINARY_NAME)
+	@fpm -f -s dir -t rpm -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).rpm usr/local/bin/$(BINARY_NAME)
+	@fpm -f -s dir -t apk -n $(BINARY_NAME) -C dist -p out/$(BINARY_NAME)_$(ARCH).apk usr/local/bin/$(BINARY_NAME)
 	@rm -rf dist
 	@echo "🔐 Generating cryptographic checksums..."
 	@cd out && sha256sum * > $(BINARY_NAME)_$(ARCH)_checksums.txt
@@ -92,7 +92,7 @@ package: build
 	@echo "⚠️  Not on Linux (detected $(OS)). Skipping fpm package generation."
 endif
 
-release: package
+release: build test package
 	@echo "🚀 Executing automated changelog release..."
 	@go run scripts/release.go
 
