@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-// runCmdE runs a command and returns output and error, allowing tests to verify expected failures.
 func runCmdE(binPath string, args ...string) (string, error) {
 	cmd := exec.Command(binPath, args...)
 	out, err := cmd.CombinedOutput()
@@ -33,7 +32,6 @@ func isSymlinkTo(t *testing.T, linkPath, expectedTarget string) bool {
 }
 
 func TestTstowE2E(t *testing.T) {
-	// 1. Compile the binary ONCE for all tests
 	buildDir, _ := os.MkdirTemp("", "tstow-build-*")
 	defer os.RemoveAll(buildDir)
 	binPath := filepath.Join(buildDir, "tstow")
@@ -42,13 +40,11 @@ func TestTstowE2E(t *testing.T) {
 		t.Fatalf("Failed to compile tstow: %v\nOutput: %s", err, string(out))
 	}
 
-	// Helper to create isolated environments for each subtest
 	setupEnv := func(t *testing.T) (string, string, []string) {
 		homeDir, _ := os.MkdirTemp("", "tstow-home-*")
 		repoDir, _ := os.MkdirTemp("", "tstow-repo-*")
-		baseArgs := []string{"-i", homeDir, "-r", repoDir}
+		baseArgs := []string{"-p", homeDir, "-r", repoDir}
 
-		// Jail the binary so os.UserHomeDir() points to our temp folder!
 		origHome := os.Getenv("HOME")
 		os.Setenv("HOME", homeDir)
 		t.Cleanup(func() {
@@ -58,7 +54,7 @@ func TestTstowE2E(t *testing.T) {
 		return homeDir, repoDir, baseArgs
 	}
 
-	t.Run("Req: Add regular file moves it and links it", func(t *testing.T) {
+	t.Run("Req: Ingest regular file copies it and links it", func(t *testing.T) {
 		homeDir, repoDir, baseArgs := setupEnv(t)
 		defer os.RemoveAll(homeDir)
 		defer os.RemoveAll(repoDir)
@@ -66,35 +62,66 @@ func TestTstowE2E(t *testing.T) {
 		localFile := filepath.Join(homeDir, ".bashrc")
 		os.WriteFile(localFile, []byte("echo hello"), 0644)
 
-		args := append(baseArgs, "add", ".bashrc", "shell/.bashrc")
+		args := append(baseArgs, "ingest", "shell/.bashrc", "~/.bashrc")
 		out, err := runCmdE(binPath, args...)
 		if err != nil {
-			t.Fatalf("add failed: %v, output: %s", err, out)
+			t.Fatalf("ingest failed: %v, output: %s", err, out)
 		}
 
 		absRepo := filepath.Join(repoDir, "shell", ".bashrc")
 		if !fileExists(absRepo) {
-			t.Errorf("File was not moved to repo")
+			t.Errorf("File was not copied to repo")
 		}
 		if !isSymlinkTo(t, localFile, absRepo) {
-			t.Errorf("Symlink not created at install location")
+			t.Errorf("Symlink not created at placement location")
 		}
 	})
 
-	t.Run("Req: Cannot add a symbolic link", func(t *testing.T) {
+	t.Run("Req: Ingest with ignore flag securely copies file but skips mapping and deletion", func(t *testing.T) {
 		homeDir, repoDir, baseArgs := setupEnv(t)
 		defer os.RemoveAll(homeDir)
 		defer os.RemoveAll(repoDir)
 
-		targetFile := filepath.Join(homeDir, "real_file")
-		symlinkFile := filepath.Join(homeDir, "symlink")
-		os.WriteFile(targetFile, []byte("data"), 0644)
-		os.Symlink(targetFile, symlinkFile)
+		localFile := filepath.Join(homeDir, "btt_backup.json")
+		os.WriteFile(localFile, []byte("data"), 0644)
 
-		args := append(baseArgs, "add", "symlink", "shell/symlink")
+		args := append(baseArgs, "ingest", "-i", "btt/btt_backup.json", "~/btt_backup.json")
+		runCmdE(binPath, args...)
+
+		absRepo := filepath.Join(repoDir, "btt", "btt_backup.json")
+		if !fileExists(absRepo) {
+			t.Errorf("Ignored file was not copied to repo")
+		}
+
+		if !fileExists(localFile) {
+			t.Errorf("Local source file was wrongfully removed during ignored ingest")
+		}
+
+		yamlData, _ := os.ReadFile(filepath.Join(repoDir, "tstow.yaml"))
+		if strings.Contains(string(yamlData), "btt_backup.json") {
+			t.Errorf("Ignored file was incorrectly added to yaml mappings")
+		}
+	})
+
+	t.Run("Req: Ingest can merge into an existing repo directory", func(t *testing.T) {
+		homeDir, repoDir, baseArgs := setupEnv(t)
+		defer os.RemoveAll(homeDir)
+		defer os.RemoveAll(repoDir)
+
+		localDir := filepath.Join(homeDir, "source_dir")
+		os.MkdirAll(localDir, 0755)
+		os.WriteFile(filepath.Join(localDir, "test.txt"), []byte("data"), 0644)
+
+		os.MkdirAll(filepath.Join(repoDir, "repo_dir"), 0755)
+
+		args := append(baseArgs, "ingest", "-i", "repo_dir", localDir)
 		out, err := runCmdE(binPath, args...)
-		if err == nil || !strings.Contains(out, "Cannot add a symbolic link") {
-			t.Errorf("Expected failure when adding symlink. Output: %s", out)
+		if err != nil {
+			t.Fatalf("Directory merge ingest failed: %v, output: %s", err, out)
+		}
+
+		if !fileExists(filepath.Join(repoDir, "repo_dir", "test.txt")) {
+			t.Errorf("Failed to merge directory contents into existing repo directory")
 		}
 	})
 
@@ -106,14 +133,14 @@ func TestTstowE2E(t *testing.T) {
 		localFile := filepath.Join(homeDir, ".bashrc")
 		os.WriteFile(localFile, []byte("data"), 0644)
 
-		args := append(baseArgs, "add", ".bashrc", "/absolute/path/in/repo")
+		args := append(baseArgs, "ingest", "/absolute/path/in/repo", "~/.bashrc")
 		out, err := runCmdE(binPath, args...)
 		if err == nil || !strings.Contains(out, "must be relative") {
 			t.Errorf("Expected failure for absolute repo path. Output: %s", out)
 		}
 	})
 
-	t.Run("Req: Install entire placement list", func(t *testing.T) {
+	t.Run("Req: Place entire placement list", func(t *testing.T) {
 		homeDir, repoDir, baseArgs := setupEnv(t)
 		defer os.RemoveAll(homeDir)
 		defer os.RemoveAll(repoDir)
@@ -123,14 +150,14 @@ func TestTstowE2E(t *testing.T) {
 		yamlContent := "mappings:\n  shell/.bashrc: .bashrc\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		runCmdE(binPath, append(baseArgs, "install")...)
+		runCmdE(binPath, append(baseArgs, "place")...)
 
 		if !isSymlinkTo(t, filepath.Join(homeDir, ".bashrc"), filepath.Join(repoDir, "shell", ".bashrc")) {
-			t.Errorf("Install failed to create symlink")
+			t.Errorf("Place failed to create symlink")
 		}
 	})
 
-	t.Run("Req: Install recursive (folder subset)", func(t *testing.T) {
+	t.Run("Req: Place recursive (folder subset)", func(t *testing.T) {
 		homeDir, repoDir, baseArgs := setupEnv(t)
 		defer os.RemoveAll(homeDir)
 		defer os.RemoveAll(repoDir)
@@ -143,14 +170,13 @@ func TestTstowE2E(t *testing.T) {
 		yamlContent := "mappings:\n  shell/.bashrc: .bashrc\n  emacs/init.el: .emacs.d/init.el\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		// Install ONLY shell
-		runCmdE(binPath, append(baseArgs, "install", "shell")...)
+		runCmdE(binPath, append(baseArgs, "place", "shell")...)
 
 		if !isSymlinkTo(t, filepath.Join(homeDir, ".bashrc"), filepath.Join(repoDir, "shell", ".bashrc")) {
-			t.Errorf("Failed to install folder subset")
+			t.Errorf("Failed to place folder subset")
 		}
 		if fileExists(filepath.Join(homeDir, ".emacs.d", "init.el")) {
-			t.Errorf("Installed files outside of recursive target")
+			t.Errorf("Placed files outside of recursive target")
 		}
 	})
 
@@ -164,19 +190,16 @@ func TestTstowE2E(t *testing.T) {
 		yamlContent := "mappings:\n  shell/.bashrc: .bashrc\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		// Create WRONG symlink
 		os.Symlink("/dev/null", filepath.Join(homeDir, ".bashrc"))
 
-		// Install without force should SKIP
-		runCmdE(binPath, append(baseArgs, "install")...)
+		runCmdE(binPath, append(baseArgs, "place")...)
 		if isSymlinkTo(t, filepath.Join(homeDir, ".bashrc"), filepath.Join(repoDir, "shell", ".bashrc")) {
-			t.Errorf("Install overwrote symlink without -f")
+			t.Errorf("Place overwrote symlink without -f")
 		}
 
-		// Install WITH force should FIX
-		runCmdE(binPath, append(baseArgs, "install", "-f")...)
+		runCmdE(binPath, append(baseArgs, "place", "-f")...)
 		if !isSymlinkTo(t, filepath.Join(homeDir, ".bashrc"), filepath.Join(repoDir, "shell", ".bashrc")) {
-			t.Errorf("Force install failed to fix wrong symlink")
+			t.Errorf("Force place failed to fix wrong symlink")
 		}
 	})
 
@@ -190,11 +213,9 @@ func TestTstowE2E(t *testing.T) {
 		yamlContent := "mappings:\n  shell/.bashrc: .bashrc\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		// Create a REAL FILE in the way (with DIFFERING content)
 		os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte("REAL FILE"), 0644)
 
-		// Even WITH force, it must refuse
-		out, _ := runCmdE(binPath, append(baseArgs, "install", "-f")...)
+		out, _ := runCmdE(binPath, append(baseArgs, "place", "-f")...)
 
 		if !strings.Contains(out, "differing from repo") {
 			t.Errorf("Failed to enforce safety boundary. Output: %s", out)
@@ -216,10 +237,9 @@ func TestTstowE2E(t *testing.T) {
 		yamlContent := "mappings:\n  shell/.bashrc: ~/.bashrc\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		// Create an IDENTICAL REAL FILE in the way
 		os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte("identical data"), 0644)
 
-		out, _ := runCmdE(binPath, append(baseArgs, "install")...)
+		out, _ := runCmdE(binPath, append(baseArgs, "place")...)
 
 		if !strings.Contains(out, "Safely replacing with symlink") {
 			t.Errorf("Failed to replace identical file. Output: %s", out)
@@ -240,14 +260,11 @@ func TestTstowE2E(t *testing.T) {
 		yamlContent := "mappings:\n  shell/.bashrc: .bashrc\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		// Mark as skipped
 		runCmdE(binPath, append(baseArgs, "skip", "shell/.bashrc")...)
-
-		// Run install
-		runCmdE(binPath, append(baseArgs, "install")...)
+		runCmdE(binPath, append(baseArgs, "place")...)
 
 		if fileExists(filepath.Join(homeDir, ".bashrc")) {
-			t.Errorf("tstow install did not respect the skiplist")
+			t.Errorf("tstow place did not respect the skiplist")
 		}
 	})
 
@@ -258,9 +275,8 @@ func TestTstowE2E(t *testing.T) {
 
 		localFile := filepath.Join(homeDir, ".bashrc")
 		os.WriteFile(localFile, []byte("data"), 0644)
-		runCmdE(binPath, append(baseArgs, "add", ".bashrc", "shell/.bashrc")...)
+		runCmdE(binPath, append(baseArgs, "ingest", "shell/.bashrc", "~/.bashrc")...)
 
-		// Delete
 		runCmdE(binPath, append(baseArgs, "delete", "shell/.bashrc")...)
 
 		if isSymlinkTo(t, localFile, filepath.Join(repoDir, "shell", ".bashrc")) {
@@ -275,30 +291,26 @@ func TestTstowE2E(t *testing.T) {
 		}
 	})
 
-	t.Run("Req: Undo reverts physical file and removes mapping", func(t *testing.T) {
+	t.Run("Req: Undo restores physical file and removes mapping", func(t *testing.T) {
 		homeDir, repoDir, baseArgs := setupEnv(t)
 		defer os.RemoveAll(homeDir)
 		defer os.RemoveAll(repoDir)
 
 		localFile := filepath.Join(homeDir, ".bashrc")
 		os.WriteFile(localFile, []byte("data"), 0644)
-		runCmdE(binPath, append(baseArgs, "add", ".bashrc", "shell/.bashrc")...)
+		runCmdE(binPath, append(baseArgs, "ingest", "shell/.bashrc", "~/.bashrc")...)
 
-		// Run undo
 		runCmdE(binPath, append(baseArgs, "undo", "shell/.bashrc")...)
 
-		// Verify symlink is gone, real file is back
 		info, err := os.Lstat(localFile)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			t.Errorf("File was not restored as a regular file")
 		}
 
-		// Verify repo file is gone
 		if fileExists(filepath.Join(repoDir, "shell", ".bashrc")) {
-			t.Errorf("Repo file was not moved out")
+			t.Errorf("Repo file was not removed during undo")
 		}
 
-		// Verify YAML is cleaned up
 		yamlData, _ := os.ReadFile(filepath.Join(repoDir, "tstow.yaml"))
 		if strings.Contains(string(yamlData), "shell/.bashrc") {
 			t.Errorf("YAML mapping was not removed")
@@ -313,8 +325,7 @@ func TestTstowE2E(t *testing.T) {
 		localFile := filepath.Join(homeDir, ".bashrc")
 		os.WriteFile(localFile, []byte("data"), 0644)
 
-		// Pass absolute path to add
-		runCmdE(binPath, append(baseArgs, "add", localFile, "shell/.bashrc")...)
+		runCmdE(binPath, append(baseArgs, "ingest", "shell/.bashrc", "~/.bashrc")...)
 
 		yamlData, _ := os.ReadFile(filepath.Join(repoDir, "tstow.yaml"))
 		if !strings.Contains(string(yamlData), "~/.bashrc") {
@@ -325,31 +336,64 @@ func TestTstowE2E(t *testing.T) {
 		}
 	})
 
-	t.Run("Req: Autopilot .tstowrc remembers repo", func(t *testing.T) {
-		homeDir, repoDir, _ := setupEnv(t) // Not using baseArgs so we can omit -r
+	t.Run("Req: Inspection uses .tstowrc, but Mutation requires explicit scope", func(t *testing.T) {
+		homeDir, repoDir, _ := setupEnv(t)
 		defer os.RemoveAll(homeDir)
 		defer os.RemoveAll(repoDir)
 
-		// 1. Run once WITH -r to teach it the location
-		runCmdE(binPath, "-i", homeDir, "-r", repoDir, "show")
+		runCmdE(binPath, "-p", homeDir, "-r", repoDir, "show")
 
 		rcFile := filepath.Join(homeDir, ".tstowrc")
 		if !fileExists(rcFile) {
-			t.Fatalf(".tstowrc was not created")
+			t.Fatalf(".tstowrc was not created by explicit flags")
 		}
 
-		// 2. Set up a valid repo payload
 		os.MkdirAll(filepath.Join(repoDir, "shell"), 0755)
 		os.WriteFile(filepath.Join(repoDir, "shell", ".bashrc"), []byte("data"), 0644)
 		yamlContent := "mappings:\n  shell/.bashrc: ~/.bashrc\n"
 		os.WriteFile(filepath.Join(repoDir, "tstow.yaml"), []byte(yamlContent), 0644)
 
-		// 3. Run install WITHOUT -r
-		runCmdE(binPath, "-i", homeDir, "install")
+		runCmdE(binPath, "place")
 
-		// 4. Verify it found the repo and linked the file
-		if !isSymlinkTo(t, filepath.Join(homeDir, ".bashrc"), filepath.Join(repoDir, "shell", ".bashrc")) {
-			t.Errorf("Autopilot failed to use remembered repo dir")
+		if isSymlinkTo(t, filepath.Join(homeDir, ".bashrc"), filepath.Join(repoDir, "shell", ".bashrc")) {
+			t.Errorf("Mutation command dangerously used RC state!")
+		}
+
+		out, _ := runCmdE(binPath, "show")
+		if !strings.Contains(out, "shell/.bashrc") {
+			t.Errorf("Show command failed to use RC state for inspection")
+		}
+	})
+
+	t.Run("Req: Ingest directory explicitly maps files, not the directory itself", func(t *testing.T) {
+		homeDir, repoDir, baseArgs := setupEnv(t)
+		defer os.RemoveAll(homeDir)
+		defer os.RemoveAll(repoDir)
+
+		localDir := filepath.Join(homeDir, ".config", "myapp")
+		os.MkdirAll(localDir, 0755)
+		os.WriteFile(filepath.Join(localDir, "config.yml"), []byte("data"), 0644)
+		os.WriteFile(filepath.Join(localDir, "hooks.sh"), []byte("echo run"), 0755)
+
+		args := append(baseArgs, "ingest", "config/myapp", "~/.config/myapp")
+		runCmdE(binPath, args...)
+
+		if !fileExists(filepath.Join(repoDir, "config", "myapp", "config.yml")) {
+			t.Errorf("File inside directory was not copied to repo")
+		}
+
+		info, _ := os.Lstat(localDir)
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("tstow wrongfully symlinked the directory itself")
+		}
+
+		if !isSymlinkTo(t, filepath.Join(localDir, "config.yml"), filepath.Join(repoDir, "config", "myapp", "config.yml")) {
+			t.Errorf("File inside directory was not replaced with a symlink")
+		}
+
+		yamlData, _ := os.ReadFile(filepath.Join(repoDir, "tstow.yaml"))
+		if !strings.Contains(string(yamlData), "config/myapp/config.yml") {
+			t.Errorf("YAML did not map individual files")
 		}
 	})
 }

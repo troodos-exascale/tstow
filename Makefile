@@ -29,7 +29,6 @@ init:
 	@if [ ! -f go.mod ]; then go mod init dotfiles/tstow; fi
 	@go get gopkg.in/yaml.v3
 	@go get github.com/spf13/cobra@latest
-	@if [ ! -f tstow.yaml ]; then touch tstow.yaml; echo "Created empty tstow.yaml"; fi
 
 tidy: init
 	@go mod tidy
