@@ -98,8 +98,16 @@ func TestTstowE2E(t *testing.T) {
 		}
 
 		yamlData, _ := os.ReadFile(filepath.Join(repoDir, "tstow.yaml"))
-		if strings.Contains(string(yamlData), "btt_backup.json") {
+
+		// It SHOULD be in the file under 'skips', so a generic strings.Contains fails.
+		// Check specifically that it didn't get added as a mapping key (with a colon).
+		if strings.Contains(string(yamlData), "btt/btt_backup.json:") {
 			t.Errorf("Ignored file was incorrectly added to yaml mappings")
+		}
+
+		// Ensure it actually made it to the skiplist
+		if !strings.Contains(string(yamlData), "- btt/btt_backup.json") {
+			t.Errorf("Ignored file was not added to the skiplist")
 		}
 	})
 
