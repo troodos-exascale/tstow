@@ -1,3 +1,7 @@
+- version: "1.4.0"
+  notes: |
+    - Fixed test suite false positive for ignored file skiplist assertions
+    - Solidified safety boundaries for ignored files
 - version: "1.3.2"
   notes: |
     - fix brew checksum
